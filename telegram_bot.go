@@ -1,28 +1,4 @@
-﻿/*
-MIT License
-
-Copyright (c) 2018 Validator.Center
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
-
-package main
+﻿package main
 
 import (
 	"encoding/json"
@@ -34,14 +10,21 @@ import (
 
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"gopkg.in/ini.v1"
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
+
+	// MySQL (mail.ru)
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/mailru/dbr"
 
 	m "github.com/ValidatorCenter/minter-go-sdk"
+
+	api "github.com/MinterTeam/minter-node-go-api"
 )
 
 // пока данные будем хранить в памяти
 var (
+	dbMySQL *dbr.Connection
+	mnt     *api.MinterNodeApi
+
 	CoinMinter string // Основная монета Minter
 	allValid   []candidate_info
 	allUser    []usrData
@@ -49,7 +32,7 @@ var (
 	//MnAddressReserv string // резервный
 	TgTokenAPI   string // Токен к API телеграма
 	TgTimeUpdate int64  // Время в сек. обновления статуса
-	DBAddress    string // MongoDB
+	DBAddress    string // DB_URI
 	HelpMsg      = "Это простой мониторинг доступности мастерноды валидатора и краткая информация о ней.\n" +
 		"Список доступных комманд:\n" +
 		"/node_info - информация о мастерноде привязанной к пользователю\n" +
@@ -96,11 +79,46 @@ type stakes_info struct {
 	BipValue32 float32 `bson:"bip_value32"`
 }*/
 
+// Очистка и создание таблицы для ...
+func creatTabl_Acc_MySQl(db *dbr.Connection) {
+	sess := db.NewSession(nil)
+	////////////////////////////////////////////////////////////////////////////
+	delMy_node_acc := `DROP TABLE IF EXISTS node_acc`
+	sess.Exec(delMy_node_acc)
+	schemaMy_node_acc := `
+		   		CREATE TABLE node_acc (
+					id INT NOT NULL AUTO_INCREMENT,
+		   			address VARCHAR(128),
+					comment VARCHAR(256),
+		   			priority  INT UNSIGNED,
+					coin VARCHAR(10),
+		   			prc  INT UNSIGNED,
+					PRIMARY KEY (id)
+		   		)
+		   		`
+	sess.Exec(schemaMy_node_acc)
+	log("OK", "...очищена - node_acc", "")
+	////////////////////////////////////////////////////////////////////////////
+}
+
 // Статус мастерноды
-func getNodeStatusString(statInt int) string {
-	statStr := "Кандидат"
+func getNodeStatusString(statInt int, i18n string) string {
+	statStr = ""
+	if i18n == "ru" {
+		statStr = "Кандидат"
+	} else if i18n == "en" {
+		statStr = "Candidate"
+	} else { //def.:
+		statStr = "Candidate"
+	}
 	if statInt == 2 {
-		statStr = "Валидатор"
+		if i18n == "ru" {
+			statStr = "Валидатор"
+		} else if i18n == "en" {
+			statStr = "Validator"
+		} else { //def.:
+			statStr = "Validator"
+		}
 	}
 	return statStr
 }
@@ -115,7 +133,7 @@ func getMinString(bigStr string) string {
 }
 
 // Загрузка пользователей из БД в память
-func loadAllUsers(session *mgo.Session) {
+func loadAllUsers(session *mgo.Session) { //(db *dbr.Connection)
 	// Таблица всех кандидатов candidate_info
 	usrCollection := session.DB("mvc_db").C("tabl_bot_usr")
 	qUsr := bson.M{}
@@ -123,7 +141,7 @@ func loadAllUsers(session *mgo.Session) {
 }
 
 // Добавляем нового пользователя в БД и в память
-func addUser(session *mgo.Session, usr1 usrData) {
+func addUser(session *mgo.Session, usr1 usrData) { //(db *dbr.Connection,......)
 	usrCollection := session.DB("mvc_db").C("tabl_bot_usr")
 	err := usrCollection.Insert(usr1)
 	if err != nil {
@@ -134,7 +152,7 @@ func addUser(session *mgo.Session, usr1 usrData) {
 }
 
 // Очистка базы (root)
-func cleanDB(session *mgo.Session) {
+func cleanDB(session *mgo.Session) { //(db *dbr.Connection)
 	usrCollection := session.DB("mvc_db").C("tabl_bot_usr")
 	_, err := usrCollection.RemoveAll(bson.M{})
 	if err != nil {
@@ -147,7 +165,7 @@ func cleanDB(session *mgo.Session) {
 }
 
 // Изменение PubKey и PrivKey мастерноды пользователя в БД и в память
-func editUserKey(session *mgo.Session, usr1 usrData) {
+func editUserKey(session *mgo.Session, usr1 usrData) { //(db *dbr.Connection,......)
 	var err error
 	usrCollection := session.DB("mvc_db").C("tabl_bot_usr")
 	if usr1.PubKey != "" && usr1.PrivKey == "" {
@@ -172,7 +190,7 @@ func editUserKey(session *mgo.Session, usr1 usrData) {
 }
 
 // Удаление данных о мастерноде
-func delNode(session *mgo.Session, chatID int64) {
+func delNode(session *mgo.Session, chatID int64) { //(db *dbr.Connection,......)
 	var err error
 	usrCollection := session.DB("mvc_db").C("tabl_bot_usr")
 	err = usrCollection.Update(bson.M{"chat_id": chatID}, bson.M{"$set": bson.M{"pub_key": "", "priv_key": "", "notification": false}})
@@ -191,7 +209,7 @@ func delNode(session *mgo.Session, chatID int64) {
 }
 
 // Изменение PubKey мастерноды пользователя в БД и в память
-func editNodeNotif(session *mgo.Session, ChatID int64) string {
+func editNodeNotif(session *mgo.Session, ChatID int64) string { //(db *dbr.Connection,......)
 	nowStatus := false
 	retTxt := ""
 	for iU, _ := range allUser {
@@ -251,7 +269,7 @@ func ReturnValid() {
 		var data candidate_info
 		json.Unmarshal(body, &data)
 
-    fmt.Printf("CND::%#v\n", cnd)   // TODO: скрыть
+		fmt.Printf("CND::%#v\n", cnd)   // TODO: скрыть
 		fmt.Printf("DATA::%#v\n", data) // TODO: скрыть
 
 		allValid = append(allValid, data)
@@ -353,10 +371,15 @@ func monitor(bot *tgbotapi.BotAPI) {
 
 func main() {
 	ConfFileName := "cmc0.ini"
+	cmdClearDB := false
 
 	// проверяем есть ли входной параметр/аргумент
 	if len(os.Args) == 2 {
-		ConfFileName = os.Args[1]
+		if os.Args[1] == "new" {
+			cmdClearDB = true
+		} else {
+			ConfFileName = os.Args[1]
+		}
 	}
 	fmt.Printf("INI=%s\n", ConfFileName)
 
@@ -384,15 +407,29 @@ func main() {
 	}
 	TgTimeUpdate = int64(_TgTimeUpdate)
 
-	// открываем соединение
+	/*// открываем соединение
 	session, err := mgo.Dial(DBAddress)
 	if err != nil {
 		fmt.Println("Ошибка соединения с БД:", err.Error())
 		return
 	}
-	defer session.Close()
+	defer session.Close()*/
+	//////////////////////////////////////////////////////
+	// DB:: MySQL
+	dbMySQL, err = dbr.Open("mysql", DBAddress, nil)
+	if err != nil {
+		fmt.Println("Ошибка соединения с БД:", err)
+		os.Exit(1)
+	}
+	defer dbMySQL.Close()
 
 	fmt.Println(time.Now())
+
+	if cmdClearDB == true {
+		// очистка и создание таблиц в базе MySQL
+		creatTabl_Acc_MySQl(dbMySQL)
+		return
+	}
 
 	// подключаемся к боту с помощью токена
 	bot, err := tgbotapi.NewBotAPI(TgTokenAPI)
@@ -456,7 +493,7 @@ func main() {
 						getMinString(oUsr.PubKey),
 						getMinString(oUsr.UserAddress),
 						getMinString(oUsr.PrivKey),
-						getNodeStatusString(cndI.StatusInt),
+						getNodeStatusString(cndI.StatusInt, "en"),
 						cndI.Commission,
 						cndI.TotalStake,
 						chekIt)
@@ -478,7 +515,7 @@ func main() {
 					reply = fmt.Sprintf("= Мастернода %d ==========\nКлюч: %s\nСтатус: %s\nКомиссия: %d%%\nСтэк: %f",
 						(iN + 1),
 						oNd.PubKey,
-						getNodeStatusString(oNd.StatusInt),
+						getNodeStatusString(oNd.StatusInt, "en"),
 						oNd.Commission,
 						oNd.TotalStake)
 					msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
