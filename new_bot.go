@@ -62,6 +62,11 @@ func creatTabl_Acc_MySQl(db *dbr.Connection) {
 
 ////////////////////////////////////////////////
 
+// Получаем список валидаторов в память
+func ReturnValid() {
+	//mnt
+}
+
 // Сам мониторинг! как горутина!
 func monitor(bot *tgbotapi.BotAPI) {
 	// бесконечный цикл
